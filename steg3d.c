@@ -3,8 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
-#define EPSILON 	0.000100
-#define DECODE_EPSILON	10000
+#include <math.h>
+//#define EPSILON 	0.000100
+//#define DECODE_EPSILON	10000
+#define EPSILON 	0.001000
+#define DECODE_EPSILON	1000
+#define METHOD_DIST	1
 #define DEBUG		printf("%s : %d\n", __func__, __LINE__); // Debug
 
 static char		*error(char *str)
@@ -14,7 +18,7 @@ static char		*error(char *str)
 }
 
 #define READ_SIZE	512
-char		*readalltext(char *filename)
+char		*readalltext(char *filename, size_t *size)
 {
 	int		fd;
 	char		buf[READ_SIZE];
@@ -38,6 +42,8 @@ char		*readalltext(char *filename)
 		free(data);
 		return (error("Read"));
 	}
+	if (size)
+		*size = sz[1];
 	return (data);
 }
 
@@ -215,11 +221,6 @@ int		obj_parse_faces(t_obj *obj, char *data)
 			if (data[0] == 'f' && (data[1] == ' ' || data[1] == '\t'))
 			{
 				obj->f[index].num_points = count_face_points(++data);
-				/*
-				printf("Num points : %u\n", obj->f[index].num_points); //
-				if (!(obj->f[index].p = malloc(sizeof(struct s_point **) * obj->f[index].num_points)))
-					return (1);
-				*/
 				obj_link_face(obj, &obj->f[index], data);
 				index++;
 			}
@@ -310,29 +311,8 @@ char		*decode_lsb_obj(t_obj *obj)
 	i = -1;
 	while (++i < obj->num_points)
 	{
-		/*printf(
-				"Decode x : [%f][%d] -> [%d]\n",
-				obj->p[i].x,
-				(int)(obj->p[i].x * DECODE_EPSILON),
-				(int)(obj->p[i].x * DECODE_EPSILON) % 2
-				);
-		*/
 		*(p++) = (int)(obj->p[i].x * DECODE_EPSILON) % 2 != 0 ? '1' : '0';
-		/*printf(
-				"Decode y : [%f][%d] -> [%d]\n",
-				obj->p[i].y,
-				(int)(obj->p[i].y * DECODE_EPSILON),
-				(int)(obj->p[i].y * DECODE_EPSILON) % 2
-				);
-		*/
 		*(p++) = (int)(obj->p[i].y * DECODE_EPSILON) % 2 != 0 ? '1' : '0';
-		/*printf(
-				"Decode z : [%f][%d] -> [%d]\n",
-				obj->p[i].z,
-				(int)(obj->p[i].z * DECODE_EPSILON),
-				(int)(obj->p[i].z * DECODE_EPSILON) % 2
-				);
-		*/
 		*(p++) = (int)(obj->p[i].z * DECODE_EPSILON) % 2 != 0 ? '1' : '0';
 	}
 	*p = '\0';
@@ -405,6 +385,153 @@ void		encode_lsb_obj(t_obj *obj, char *data, size_t size)
 	}
 }
 
+double			distance(struct s_point a, struct s_point b)
+{
+	double subx;
+	double suby;
+	double subz;
+	double sum;
+
+	subx = (b.x - a.x) * (b.x - a.x);
+	suby = (b.y - a.y) * (b.y - a.y);
+	subz = (b.z - a.z) * (b.z - a.z);
+	sum = subx + suby + subz;
+	if (sum == 0)
+		return (0.0);
+	return (sqrt(sum));
+}
+
+struct s_point sub_vec(struct s_point a, struct s_point b)
+{
+	struct s_point sub;
+
+	sub.x = b.x - a.x;
+	sub.y = b.y - a.y;
+	sub.z = b.z - a.z;
+	sub.w = 0;
+	return (sub);
+}
+
+struct s_point	unit_vec(struct s_point a, struct s_point b)
+{
+	struct s_point unit;
+	struct s_point v;
+	double len;
+
+	len = distance(a, b);
+	v = sub_vec(a, b);
+	unit.x = v.x / len;
+	unit.y = v.y / len;
+	unit.z = v.z / len;
+	return (unit);
+}
+
+struct s_point mul_vec(struct s_point a, float value)
+{
+	struct s_point mul;
+
+	mul.x = a.x * value;
+	mul.y = a.y * value;
+	mul.z = a.z * value;
+	return (mul);
+}
+
+struct s_point add_vec(struct s_point a, struct s_point b)
+{
+	struct s_point	add;
+
+	add.x = a.x + b.x;
+	add.y = a.y + b.y;
+	add.z = a.z + b.z;
+	return (add);
+}
+
+void		display_vec(const char *prefix, struct s_point p)
+{
+	printf("%s x[%f] y[%f] z[%f]\n", prefix, p.x, p.y, p.z);//
+}
+
+char 		*decode_dist_lsb_obj(t_obj *obj, size_t *size)
+{
+	int 		ptIndex;
+	t_point		*a;
+	t_point		*b;
+	char		*bitstream;
+	char		*p;
+
+	if (!(bitstream = malloc(sizeof(char) * obj->num_points - 1)))
+		return (NULL);
+	memset(bitstream, '\0', sizeof(char) * obj->num_points - 1);
+	p = bitstream;
+	ptIndex = -1;
+	while (++ptIndex < obj->num_points - 1)
+	{
+		a = &obj->p[ptIndex];
+		b = &obj->p[ptIndex + 1];
+
+		double d;
+		d = distance(*a, *b);
+		*(p++) = (int)(d * DECODE_EPSILON) % 2 ? '1' : '0';
+	}
+	*p = '\0';
+	if (size)
+		*size = (size_t)(bitstream - p);
+	p = decode_bitstream(bitstream);
+	free(bitstream);
+	return (p);
+}
+
+void		encode_dist_lsb_obj(t_obj *obj, char *data, size_t size)
+{
+	int 		ptIndex;
+	t_point		*a;	
+	t_point		*b;
+	uint		dIndex;
+	int		length;
+	char		*bitstream;
+
+	if (!(bitstream = encode_bitstream(data, size)))
+		return ;
+	length = strlen(bitstream);
+	ptIndex = -1;
+	dIndex = -1;
+	while (++ptIndex < obj->num_points - 1)
+	{
+		dIndex++;
+		if (dIndex >= size * 8)
+			return ;
+		a = &obj->p[ptIndex];
+		b = &obj->p[ptIndex + 1];
+
+		double d;
+		d = distance(*a, *b);
+		struct s_point unit;
+
+		unit = unit_vec(*a, *b);
+		unit = mul_vec(unit, EPSILON);
+		if (bitstream[dIndex] == '1')
+		{
+			if ((int)(d * DECODE_EPSILON) % 2 == 0)
+			{
+				while ((int)(d * DECODE_EPSILON) % 2 == 0)
+				{
+					*b = add_vec(*b, unit);
+					d = distance(*a, *b);
+				}
+			}
+		}
+		else if ((int)(d * DECODE_EPSILON) % 2 == 1)
+		{
+			unit = mul_vec(unit, -1.0);
+			while ((int)(d * DECODE_EPSILON) % 2 == 1)
+			{
+				*b = add_vec(*b, unit);
+				d = distance(*a, *b);
+			}
+		}
+	}
+}
+
 int help()
 {
 	printf("Usage: <file.obj> [str]\n");
@@ -418,18 +545,27 @@ int main(int argc, char **argv)
 
 	if (argc != 3 && argc != 2)
 		return (help());
-	if (!(obj = readalltext(argv[1])))
+	if (!(obj = readalltext(argv[1], NULL)))
 		return (printf("Null read\n"));
 	//printf("obj: %s\n", obj);
 	if (!(model = new_obj(obj)))
 		return (printf("New obj error\n"));
 	if (argc == 3)
 	{
-		encode_lsb_obj(model, argv[2], (size_t)strlen(argv[2]) + 2);
+		if (METHOD_DIST)
+			encode_dist_lsb_obj(model, argv[2], (size_t)strlen(argv[2]) + 2);
+		else
+			encode_lsb_obj(model, argv[2], (size_t)strlen(argv[2]) + 2);
 		export_model(model);
 		//printf("Decoded: [%s]\n", decode_lsb_obj(model));
+		//printf("Decoded: [%s]\n", decode_dist_lsb_obj(model, NULL));
 	}
 	else if (argc == 2)
-		printf("Decoded: [%s]\n", decode_lsb_obj(model));
+	{
+		if (METHOD_DIST)
+			printf("Decoded: [%s]\n", decode_dist_lsb_obj(model, NULL));
+		else
+			printf("Decoded: [%s]\n", decode_lsb_obj(model));
+	}
 	return (0);
 }
